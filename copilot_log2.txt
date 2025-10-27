@@ -1,5 +1,5 @@
 ﻿Лог Copilot: 
-Створи базовий CMakeLists.txt для проєкту Hello World зфайлом main.cpp
+Створи базовий CMakeLists.txt для проєкту Hello World з файлом main.cpp
 
 Відповідь Copilot: 
 
@@ -21,5 +21,6 @@ if(MSVC)
 else()
   target_compile_options(hello PRIVATE -Wall -Wextra -pedantic)
 endif()
+
 
 
