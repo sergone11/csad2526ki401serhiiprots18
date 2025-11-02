@@ -3,6 +3,7 @@ project(HelloWorld)
 set(CMAKE_CXX_STANDARD 11)
 add_executable(hello main.cpp)
 
+
 find_package(GTest REQUIRED)
 include_directories(${GTEST_INCLUDE_DIRS})
 add_executable(runTests tests/unit_tests.cpp math_operations.cpp)
