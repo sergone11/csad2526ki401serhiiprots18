@@ -1,0 +1,29 @@
+--- Prompt to GitHub Copilot (Stage 5) ---
+Create a GitHub Actions workflow file (.github/workflows/ci.yml) that:
+1. Triggers on push and pull_request to branch 'develop'
+2. Runs on three OS: ubuntu-latest, windows-latest, macos-latest
+3. Checks out the code
+4. Installs CMake
+5. Configures with 'cmake -S . -B build'
+6. Builds with 'cmake --build build --config Release'
+7. Runs tests with 'ctest --test-dir build --output-on-failure'
+
+--- Copilot Response (generated) ---
+name: CI
+on:
+  push:
+    branches: [ develop ]
+  pull_request:
+    branches: [ develop ]
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: lukka/get-cmake@v3.27.7
+      - run: cmake -S . -B build
+      - run: cmake --build build --config Release
+      - run: ctest --test-dir build --output-on-failure
