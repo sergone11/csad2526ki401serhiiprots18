@@ -1,0 +1,42 @@
+--- Prompt to GitHub Copilot (Stage 5) ---
+Create a GitHub Actions workflow with:
+- Name: Build and Test C++ Project
+- Trigger: push/pull_request to develop or master
+- Job: build-and-test with matrix: ubuntu-latest, windows-latest, macos-latest
+- Steps:
+  - Checkout code
+  - Set up CMake (jwlawson/actions-setup-cmake@v1)
+  - Configure: cmake -S . -B build
+  - Build: cmake --build build --config Debug (Windows), cmake --build build (others)
+  - Run tests: ctest --test-dir build --output-on-failure -C Debug (Windows only)
+  - Upload artifacts: build/Debug/
+
+--- Copilot Response (generated) ---
+name: Build and Test C++ Project
+on:
+  push:
+    branches: [ develop, master ]
+  pull_request:
+    branches: [ develop, master ]
+jobs:
+  build-and-test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jwlawson/actions-setup-cmake@v1
+      - run: cmake -S . -B build
+      - run: |
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            cmake --build build --config Debug
+          else
+            cmake --build build
+          fi
+        shell: bash
+      - run: ctest --test-dir build --output-on-failure ${{ matrix.os == 'windows-latest' && '-C Debug' || '' }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: build/Debug/
