@@ -35,6 +35,13 @@ jobs:
             cmake --build build
           fi
         shell: bash
+
+--- Prompt to GitHub Copilot (Етап 6 - Верифікація) ---
+Зробити так, щоб артефакти завантажувались з усіх 3 ОС.
+Додати окремий артефакт для кожної ОС.
+
+--- Copilot Response ---
+Оновлено ci.yml:
       - run: ctest --test-dir build --output-on-failure ${{ matrix.os == 'windows-latest' && '-C Debug' || '' }}
       - uses: actions/upload-artifact@v4
         with:
