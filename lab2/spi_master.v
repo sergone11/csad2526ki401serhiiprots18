@@ -1,41 +1,62 @@
-// spi_master.v - SPI Master (CPOL=0, CPHA=0, 8-бітний)
-// Варіант 18: Verilog, режим Master
+// =============================================================================
+// spi_master.v - SPI Master Controller (CPOL=0, CPHA=0, 8-бітний)
+// Варіант 18: Verilog, повнодуплексний режим Master
+// Ціль: ПЛІС (Xilinx Artix-7), частота SCLK = 12.5 МГц (clk/4)
+// =============================================================================
 
 module spi_master (
-    input  wire       clk,        // Системний такт (50 МГц)
-    input  wire       rst_n,      // Активний низький скид
-    input  wire       start,      // Початок передачі
-    input  wire [7:0] data_in,    // Дані для передачі
-    output reg  [7:0] data_out,   // Отримані дані
-    output reg        data_ready, // Флаг готовності даних
-    output reg        sclk,       // Такт SPI
-    output reg        mosi,       // Master Out Slave In
-    input  wire       miso,       // Master In Slave Out
-    output reg        ss_n        // Вибір slave (активний низький)
+    // =========================================================================
+    // ПОРТИ МОДУЛЯ
+    // =========================================================================
+    input  wire       clk,        // Системний такт (рекомендовано 50 МГц)
+    input  wire       rst_n,      // Асинхронний скид (активний низький рівень)
+    input  wire       start,      // Імпульс запуску передачі (1 такт)
+    input  wire [7:0] data_in,    // Вхідні дані для передачі (8 біт)
+    
+    output reg  [7:0] data_out,   // Отримані дані від slave (8 біт)
+    output reg        data_ready, // Флаг: дані прийняті, готові до зчитування
+    output reg        sclk,       // Тактовий сигнал SPI (генерується Master)
+    output reg        mosi,       // Master Out Slave In — вихід даних
+    input  wire       miso,       // Master In Slave Out — вхід даних
+    output reg        ss_n        // Slave Select (активний низький) — вибір slave
 );
 
-    // Стани FSM
-    localparam IDLE  = 2'd0;  // Очікування
-    localparam LOAD  = 2'd1;  // Завантаження даних
-    localparam SHIFT = 2'd2;  // Зсув даних
-    localparam DONE  = 2'd3;  // Завершення
+    // =========================================================================
+    // ПАРАМЕТРИ ТА ЛОКАЛЬНІ СТАНОВИЩА FSM
+    // =========================================================================
+    localparam IDLE  = 2'd0;  // Стан очікування (ss_n = 1, sclk = 0)
+    localparam LOAD  = 2'd1;  // Завантаження даних у регістр зсуву
+    localparam SHIFT = 2'd2;  // Зсув даних (8 біт), передача та прийом
+    localparam DONE  = 2'd3;  // Завершення, data_ready = 1
 
-    reg [1:0] state, next_state;
-    reg [7:0] shift_reg_tx, shift_reg_rx; // Регістри зсуву
-    reg [3:0] bit_cnt;                    // Лічильник бітів
-    reg       sclk_en;                    // Дозвіл такту SPI
+    // =========================================================================
+    // ВНУТРІШНІ РЕГІСТРИ
+    // =========================================================================
+    reg [1:0] state, next_state;          // Поточний та наступний стан FSM
+    reg [7:0] shift_reg_tx;               // Регістр зсуву для передачі (MOSI)
+    reg [7:0] shift_reg_rx;               // Регістр зсуву для прийому (MISO)
+    reg [3:0] bit_cnt;                    // Лічильник бітів (0..7)
+    reg       sclk_en;                    // Дозвіл генерації SCLK
+    reg [1:0] sclk_div;                   // Дільник такту: clk / 4 → 12.5 МГц
 
-    // Генерація SCLK: clk / 4 = 12.5 МГц
-    reg [1:0] sclk_div;
+    // =========================================================================
+    // БЛОК 1: ГЕНЕРАЦІЯ ТАКТОВОГО СИГНАЛУ SCLK
+    // =========================================================================
+    // Дільник частоти: clk (50 МГц) → SCLK = 12.5 МГц
+    // sclk_div: 00 → 01 → 10 → 11 → 00...
+    // Використовуємо sclk_div[1] як SCLK (період 4 такти clk)
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n)
-            sclk_div <= 0;
+            sclk_div <= 2'b00;
         else if (sclk_en)
             sclk_div <= sclk_div + 1;
     end
     assign sclk = sclk_en ? sclk_div[1] : 1'b0;
 
-    // Регістр стану FSM
+    // =========================================================================
+    // БЛОК 2: РЕГІСТР СТАНУ FSM
+    // =========================================================================
+    // Синхронне оновлення стану на фронті clk
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n)
             state <= IDLE;
@@ -43,56 +64,70 @@ module spi_master (
             state <= next_state;
     end
 
-    // Логіка наступного стану
+    // =========================================================================
+    // БЛОК 3: ЛОГІКА ПЕРЕХОДУ МІЖ СТАНАМИ (FSM)
+    // =========================================================================
     always @(*) begin
         next_state = state;
         case (state)
-            IDLE:  if (start) next_state = LOAD;
-            LOAD:  next_state = SHIFT;
+            IDLE:  if (start)        next_state = LOAD;
+            LOAD:                    next_state = SHIFT;
             SHIFT: if (bit_cnt == 7) next_state = DONE;
-            DONE:  next_state = IDLE;
-            default: next_state = IDLE;
+            DONE:                    next_state = IDLE;
+            default:                 next_state = IDLE;
         endcase
     end
 
-    // Вихідна логіка та шлях даних
+    // =========================================================================
+    // БЛОК 4: ОСНОВНА ЛОГІКА ДАНИХ ТА КЕРУВАННЯ
+    // =========================================================================
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            ss_n <= 1'b1;
-            mosi <= 1'b0;
+            // Скид усіх регістрів
+            ss_n         <= 1'b1;
+            mosi         <= 1'b0;
             shift_reg_tx <= 8'd0;
             shift_reg_rx <= 8'd0;
-            bit_cnt <= 4'd0;
-            data_ready <= 1'b0;
-            sclk_en <= 1'b0;
-            data_out <= 8'd0;
+            bit_cnt      <= 4'd0;
+            data_ready   <= 1'b0;
+            sclk_en      <= 1'b0;
+            data_out     <= 8'd0;
         end else begin
-            data_ready <= 1'b0;
+            data_ready <= 1'b0;  // Скидаємо флаг готовності
+
             case (state)
+                // -------------------------------------------------------------
                 IDLE: begin
-                    ss_n <= 1'b1;
-                    sclk_en <= 1'b0;
-                    bit_cnt <= 4'd0;
+                    ss_n    <= 1'b1;      // Вимикаємо slave
+                    sclk_en <= 1'b0;      // Зупиняємо SCLK
+                    bit_cnt <= 4'd0;      // Скидаємо лічильник
                 end
+
+                // -------------------------------------------------------------
                 LOAD: begin
-                    ss_n <= 1'b0;
-                    shift_reg_tx <= data_in;
-                    sclk_en <= 1'b1;
+                    ss_n         <= 1'b0;             // Активуємо slave
+                    shift_reg_tx <= data_in;          // Завантажуємо дані
+                    sclk_en      <= 1'b1;             // Запускаємо SCLK
                 end
+
+                // -------------------------------------------------------------
                 SHIFT: begin
-                    if (sclk_div == 2'b01) begin  // Фронт такту
-                        mosi <= shift_reg_tx[7];
-                        shift_reg_tx <= {shift_reg_tx[6:0], 1'b0};
-                        shift_reg_rx <= {shift_reg_rx[6:0], miso};
+                    // Синхронізація з фронтом SCLK (sclk_div == 01)
+                    if (sclk_div == 2'b01) begin
+                        mosi <= shift_reg_tx[7];                    // Виводимо старший біт
+                        shift_reg_tx <= {shift_reg_tx[6:0], 1'b0};   // Зсув вліво
+                        shift_reg_rx <= {shift_reg_rx[6:0], miso};  // Зсув вправо + вхідний біт
                         if (bit_cnt < 7)
-                            bit_cnt <= bit_cnt + 1;
+                            bit_cnt <= bit_cnt + 1;                 // Лічильник бітів
                     end
                 end
+
+                // -------------------------------------------------------------
                 DONE: begin
-                    data_out <= shift_reg_rx;
-                    data_ready <= 1'b1;
-                    ss_n <= 1'b1;
-                    sclk_en <= 1'b0;
+                    data_out   <= shift_reg_rx;   // Копіюємо прийняті дані
+                    data_ready <= 1'b1;           // Піднімаємо флаг готовності
+                    ss_n       <= 1'b1;           // Деактивуємо slave
+                    sclk_en    <= 1'b0;           // Зупиняємо SCLK
                 end
             endcase
         end
