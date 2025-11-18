@@ -1,74 +1,58 @@
 `timescale 1ns / 1ps
-// tb_spi_master.v - Testbench for SPI Master
 
-module tb_spi_master;
+module spi_master_tb;
+    localparam CLK_PERIOD = 20;
 
-    reg clk, rst_n, start;
-    reg [7:0] data_in;
+    reg clk_tb;
+    reg reset_tb;
+    reg i_start_tb;
+    reg [7:0] i_tx_byte_tb;
 
-    wire [7:0] data_out;
-    wire       data_ready;
-    wire       sclk, mosi, ss_n;
-    wire       miso;
+    wire o_done_tb;
+    wire [7:0] o_rx_byte_tb;
+    wire o_mosi_tb;
+    wire o_sck_tb;
+    wire o_ss_tb;
 
-    // === DUT ===
-    spi_master dut (
-        .clk(clk),
-        .rst_n(rst_n),
-        .start(start),
-        .data_in(data_in),
-        .data_out(data_out),
-        .data_ready(data_ready),
-        .sclk(sclk),
-        .mosi(mosi),
-        .miso(miso),
-        .ss_n(ss_n)
+    // Instantiate UUT
+    spi_master uut (
+        .clk(clk_tb), .reset(reset_tb), .i_start(i_start_tb),
+        .i_tx_byte(i_tx_byte_tb), .o_done(o_done_tb), .o_rx_byte(o_rx_byte_tb),
+        .i_miso(o_mosi_tb), // loopback
+        .o_mosi(o_mosi_tb), .o_sck(o_sck_tb), .o_ss(o_ss_tb)
     );
-
-    // === SLAVE EMULATION (correct inverted echo) ===
-    reg [7:0] slave_shift_reg;
-    reg       miso_reg;
-
-    always @(posedge sclk or posedge ss_n) begin
-        if (ss_n) begin
-            slave_shift_reg <= ~data_in;   // invert incoming byte
-            miso_reg        <= 0;
-        end else begin
-            miso_reg <= slave_shift_reg[7];
-            slave_shift_reg <= {slave_shift_reg[6:0], 1'b0};
-        end
-    end
-
-    assign miso = miso_reg;
-
-    // === VCD DUMP ===
+  // ---- Waveform setup ----
     initial begin
-        $dumpfile("dump.vcd");
-        $dumpvars(0, tb_spi_master);
+        $dumpfile("wave.vcd");  // EPWave використовує автоматично
+        $dumpvars(0, uut);      // всі сигнали UUT
     end
 
-    // === CLOCK: 50 MHz (20 ns period) ===
-    always #10 clk = ~clk;
+    // Clock generation
+    initial clk_tb = 0;
+    always #(CLK_PERIOD/2) clk_tb = ~clk_tb;
 
-    // === TEST SEQUENCE ===
     initial begin
-        clk = 0; rst_n = 0; start = 0; data_in = 0;
+        $display("Starting SPI Master Testbench (Loopback Mode)...");
+        reset_tb <= 1; i_start_tb <= 0; i_tx_byte_tb <= 8'h00;
+        #(CLK_PERIOD*5);
+        reset_tb <= 0;
+        #(CLK_PERIOD*10);
 
-        #40 rst_n = 1;  // Reset release
+        $display("TEST 1: Sending 0xA5...");
+        i_start_tb <= 1; i_tx_byte_tb <= 8'hA5;
+        #CLK_PERIOD; i_start_tb <= 0;
+        wait(o_done_tb == 1);
+        $display("TEST 1: Done flag received. Sent: 0xA5, Received: %h", o_rx_byte_tb);
+        #(CLK_PERIOD*20);
 
-        // TEST 1
-        #40 data_in = 8'hA5; start = 1;
-        #20 start = 0;
-        @(posedge data_ready);
-        $display("TEST 1: Sent 0x%h -> Received 0x%h", 8'hA5, data_out);
+        $display("TEST 2: Sending 0xF0...");
+        i_start_tb <= 1; i_tx_byte_tb <= 8'hF0;
+        #CLK_PERIOD; i_start_tb <= 0;
+        wait(o_done_tb == 1);
+        $display("TEST 2: Done flag received. Sent: 0xF0, Received: %h", o_rx_byte_tb);
+        #(CLK_PERIOD*20);
 
-        // TEST 2
-        #200 data_in = 8'h55; start = 1;
-        #20 start = 0;
-        @(posedge data_ready);
-        $display("TEST 2: Sent 0x%h -> Received 0x%h", 8'h55, data_out);
-
-        #200 $finish;
-    end
-
+        $display("Simulation Finished.");
+        $finish;
+    end 
 endmodule
