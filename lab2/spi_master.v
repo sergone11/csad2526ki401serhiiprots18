@@ -1,136 +1,98 @@
-// =============================================================================
-// spi_master.v - SPI Master Controller (CPOL=0, CPHA=0, 8-бітний)
-// Варіант 18: Verilog, повнодуплексний режим Master
-// Ціль: ПЛІС (Xilinx Artix-7), частота SCLK = 12.5 МГц (clk/4)
-// =============================================================================
-
 module spi_master (
-    // =========================================================================
-    // ПОРТИ МОДУЛЯ
-    // =========================================================================
-    input  wire       clk,        // Системний такт (рекомендовано 50 МГц)
-    input  wire       rst_n,      // Асинхронний скид (активний низький рівень)
-    input  wire       start,      // Імпульс запуску передачі (1 такт)
-    input  wire [7:0] data_in,    // Вхідні дані для передачі (8 біт)
-    
-    output reg  [7:0] data_out,   // Отримані дані від slave (8 біт)
-    output reg        data_ready, // Флаг: дані прийняті, готові до зчитування
-    output reg        sclk,       // Тактовий сигнал SPI (генерується Master)
-    output reg        mosi,       // Master Out Slave In — вихід даних
-    input  wire       miso,       // Master In Slave Out — вхід даних
-    output reg        ss_n        // Slave Select (активний низький) — вибір slave
+    // ---- Global Signals ----
+    input wire clk,
+    input wire reset,
+    // ---- Control Interface ----
+    input wire i_start,
+    input wire [7:0] i_tx_byte,
+    output reg o_done,
+    output reg [7:0] o_rx_byte,
+    // ---- SPI Lines ----
+    input wire i_miso,
+    output reg o_mosi,
+    output reg o_sck,
+    output reg o_ss
 );
+    // ---- Parameters ----
+    localparam CLK_DIV_RATIO = 25; // 50MHz / (1MHz * 2) = 25
 
-    // =========================================================================
-    // ПАРАМЕТРИ ТА ЛОКАЛЬНІ СТАНОВИЩА FSM
-    // =========================================================================
-    localparam IDLE  = 2'd0;  // Стан очікування (ss_n = 1, sclk = 0)
-    localparam LOAD  = 2'd1;  // Завантаження даних у регістр зсуву
-    localparam SHIFT = 2'd2;  // Зсув даних (8 біт), передача та прийом
-    localparam DONE  = 2'd3;  // Завершення, data_ready = 1
+    // ---- FSM State Parameters ----
+    localparam S_IDLE  = 2'b00;
+    localparam S_START = 2'b01;
+    localparam S_SHIFT = 2'b10;
+    localparam S_STOP  = 2'b11;
 
-    // =========================================================================
-    // ВНУТРІШНІ РЕГІСТРИ
-    // =========================================================================
-    reg [1:0] state, next_state;          // Поточний та наступний стан FSM
-    reg [7:0] shift_reg_tx;               // Регістр зсуву для передачі (MOSI)
-    reg [7:0] shift_reg_rx;               // Регістр зсуву для прийому (MISO)
-    reg [3:0] bit_cnt;                    // Лічильник бітів (0..7)
-    reg       sclk_en;                    // Дозвіл генерації SCLK
-    reg [1:0] sclk_div;                   // Дільник такту: clk / 4 → 12.5 МГц
+    // ---- FSM Internal Registers ----
+    reg [1:0] state_reg = S_IDLE;
+    reg [$clog2(CLK_DIV_RATIO):0] clk_div_counter = 0;
+    reg [3:0] bit_counter = 0;
 
-    // =========================================================================
-    // БЛОК 1: ГЕНЕРАЦІЯ ТАКТОВОГО СИГНАЛУ SCLK
-    // =========================================================================
-    // Дільник частоти: clk (50 МГц) → SCLK = 12.5 МГц
-    // sclk_div: 00 → 01 → 10 → 11 → 00...
-    // Використовуємо sclk_div[1] як SCLK (період 4 такти clk)
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n)
-            sclk_div <= 2'b00;
-        else if (sclk_en)
-            sclk_div <= sclk_div + 1;
+    // ---- Internal Wires for module communication ----
+    reg tx_load_reg;
+    reg rx_sample_trigger_reg;
+    reg tx_shift_trigger_reg;
+    wire w_mosi_bit;
+    wire [7:0] w_rx_byte;
+
+    // ---- Transmitter (Tx) ----
+    reg [7:0] tx_shift_reg = 0;
+    always @(posedge clk or posedge reset) begin
+        if (reset) tx_shift_reg <= 0;
+        else begin
+            if (tx_load_reg) tx_shift_reg <= i_tx_byte;
+            else if (tx_shift_trigger_reg) tx_shift_reg <= tx_shift_reg << 1;
+        end
     end
-    assign sclk = sclk_en ? sclk_div[1] : 1'b0;
+    assign w_mosi_bit = tx_shift_reg[7];
 
-    // =========================================================================
-    // БЛОК 2: РЕГІСТР СТАНУ FSM
-    // =========================================================================
-    // Синхронне оновлення стану на фронті clk
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n)
-            state <= IDLE;
-        else
-            state <= next_state;
+    // ---- Receiver (Rx) ----
+    reg [7:0] rx_shift_reg = 0;
+    always @(posedge clk or posedge reset) begin
+        if (reset) rx_shift_reg <= 0;
+        else if (rx_sample_trigger_reg) rx_shift_reg <= {rx_shift_reg[6:0], i_miso};
     end
+    assign w_rx_byte = rx_shift_reg;
 
-    // =========================================================================
-    // БЛОК 3: ЛОГІКА ПЕРЕХОДУ МІЖ СТАНАМИ (FSM)
-    // =========================================================================
-    always @(*) begin
-        next_state = state;
-        case (state)
-            IDLE:  if (start)        next_state = LOAD;
-            LOAD:                    next_state = SHIFT;
-            SHIFT: if (bit_cnt == 7) next_state = DONE;
-            DONE:                    next_state = IDLE;
-            default:                 next_state = IDLE;
-        endcase
-    end
-
-    // =========================================================================
-    // БЛОК 4: ОСНОВНА ЛОГІКА ДАНИХ ТА КЕРУВАННЯ
-    // =========================================================================
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            // Скид усіх регістрів
-            ss_n         <= 1'b1;
-            mosi         <= 1'b0;
-            shift_reg_tx <= 8'd0;
-            shift_reg_rx <= 8'd0;
-            bit_cnt      <= 4'd0;
-            data_ready   <= 1'b0;
-            sclk_en      <= 1'b0;
-            data_out     <= 8'd0;
+    // ---- FSM ----
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin
+            state_reg <= S_IDLE;
+            o_sck <= 0; o_ss <= 1; o_mosi <= 0; o_done <= 0;
+            bit_counter <= 0; clk_div_counter <= 0;
+            o_rx_byte <= 0;
+            tx_load_reg <= 0; rx_sample_trigger_reg <= 0; tx_shift_trigger_reg <= 0;
         end else begin
-            data_ready <= 1'b0;  // Скидаємо флаг готовності
-
-            case (state)
-                // -------------------------------------------------------------
-                IDLE: begin
-                    ss_n    <= 1'b1;      // Вимикаємо slave
-                    sclk_en <= 1'b0;      // Зупиняємо SCLK
-                    bit_cnt <= 4'd0;      // Скидаємо лічильник
-                end
-
-                // -------------------------------------------------------------
-                LOAD: begin
-                    ss_n         <= 1'b0;             // Активуємо slave
-                    shift_reg_tx <= data_in;          // Завантажуємо дані
-                    sclk_en      <= 1'b1;             // Запускаємо SCLK
-                end
-
-                // -------------------------------------------------------------
-                SHIFT: begin
-                    // Синхронізація з фронтом SCLK (sclk_div == 01)
-                    if (sclk_div == 2'b01) begin
-                        mosi <= shift_reg_tx[7];                    // Виводимо старший біт
-                        shift_reg_tx <= {shift_reg_tx[6:0], 1'b0};   // Зсув вліво
-                        shift_reg_rx <= {shift_reg_rx[6:0], miso};  // Зсув вправо + вхідний біт
-                        if (bit_cnt < 7)
-                            bit_cnt <= bit_cnt + 1;                 // Лічильник бітів
+            tx_load_reg <= 0; rx_sample_trigger_reg <= 0; tx_shift_trigger_reg <= 0;
+            case (state_reg)
+                S_IDLE: begin
+                    o_done <= 0; o_ss <= 1; o_sck <= 0; o_mosi <= 0;
+                    if (i_start) begin
+                        tx_load_reg <= 1; bit_counter <= 8; state_reg <= S_START;
                     end
                 end
-
-                // -------------------------------------------------------------
-                DONE: begin
-                    data_out   <= shift_reg_rx;   // Копіюємо прийняті дані
-                    data_ready <= 1'b1;           // Піднімаємо флаг готовності
-                    ss_n       <= 1'b1;           // Деактивуємо slave
-                    sclk_en    <= 1'b0;           // Зупиняємо SCLK
+                S_START: begin
+                    o_ss <= 0; o_mosi <= w_mosi_bit;
+                    state_reg <= S_SHIFT; clk_div_counter <= 0;
                 end
+                S_SHIFT: begin
+                    if (bit_counter > 0) begin
+                        if (clk_div_counter == CLK_DIV_RATIO - 1) begin
+                            o_sck <= 0; tx_shift_trigger_reg <= 1;
+                            clk_div_counter <= 0; bit_counter <= bit_counter - 1;
+                        end else if (clk_div_counter == (CLK_DIV_RATIO/2) - 1) begin
+                            o_sck <= 1; rx_sample_trigger_reg <= 1;
+                            clk_div_counter <= clk_div_counter + 1;
+                        end else if (clk_div_counter == 1) begin
+                            o_mosi <= w_mosi_bit; clk_div_counter <= clk_div_counter + 1;
+                        end else clk_div_counter <= clk_div_counter + 1;
+                    end else state_reg <= S_STOP;
+                end
+                S_STOP: begin
+                    o_ss <= 1; o_sck <= 0; o_mosi <= 0; o_done <= 1;
+                    o_rx_byte <= w_rx_byte; state_reg <= S_IDLE;
+                end
+                default: state_reg <= S_IDLE;
             endcase
         end
     end
-
 endmodule
